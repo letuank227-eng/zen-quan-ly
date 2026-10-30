@@ -12,8 +12,6 @@ router.get('/oauth/callback', MetaController.handleOAuthCallback);
 // Pages discovery & connection
 router.get('/available-pages', authenticate, requireAdmin, MetaController.getAvailablePages);
 router.post('/connect-pages', authenticate, requireAdmin, MetaController.connectSelectedPages);
-router.post('/connect-direct', authenticate, requireAdmin, MetaController.connectPageDirectly);
-router.post('/connect-token', authenticate, requireAdmin, MetaController.connectToken);
 router.post('/disconnect-page/:pageId', authenticate, requireAdmin, MetaController.disconnectPage);
 router.post('/disconnect-account', authenticate, requireAdmin, MetaController.disconnectAccount);
 

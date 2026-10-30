@@ -51,11 +51,6 @@ export const Settings: React.FC = () => {
   const [inputAppSecret, setInputAppSecret] = useState('');
   const [inputVerifyToken, setInputVerifyToken] = useState('');
   const [savingCredentials, setSavingCredentials] = useState(false);
-
-  // Direct Page Token Connect Form (Fast Test in 1 minute)
-  const [directPageToken, setDirectPageToken] = useState('');
-  const [directPageId, setDirectPageId] = useState('');
-  const [directConnecting, setDirectConnecting] = useState(false);
   const [showAdvancedMeta, setShowAdvancedMeta] = useState(false);
 
   // Profile state
@@ -195,48 +190,6 @@ export const Settings: React.FC = () => {
       setStatusMessage({ type: 'error', text: err.response?.data?.message || 'Lỗi lưu thông tin Meta App.' });
     } finally {
       setSavingCredentials(false);
-    }
-  };
-
-  // Connect Page Directly via Page Access Token
-  const handleConnectDirectPage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!directPageToken.trim()) {
-      setStatusMessage({
-        type: 'error',
-        text: '⚠️ Vui lòng dán mã Access Token (bắt đầu bằng EAA...) vào ô phía trên trước khi bấm Lưu & Đồng bộ ngay!',
-      });
-      return;
-    }
-
-    setDirectConnecting(true);
-    setStatusMessage(null);
-    try {
-      const res = await api.post('/meta/connect-token', {
-        accessToken: directPageToken.trim(),
-        pageAccessToken: directPageToken.trim(),
-        pageId: directPageId.trim() || undefined,
-      });
-
-      if (res.data.success) {
-        const pageNames = res.data.pages ? res.data.pages.map((p: any) => p.name).join(', ') : (res.data.page?.name || 'Fanpage');
-        setStatusMessage({
-          type: 'success',
-          text: `🎉 ${res.data.message || `Đã kết nối thành công: ${pageNames}!`} Hệ thống đã tự động kích hoạt Webhook và đang đồng bộ bài viết, tin nhắn ngầm.`,
-        });
-        setDirectPageToken('');
-        setDirectPageId('');
-        await refreshPages();
-        await refreshUser();
-        fetchMetaStatus();
-      }
-    } catch (err: any) {
-      setStatusMessage({
-        type: 'error',
-        text: err.response?.data?.message || 'Không thể kết nối Page. Vui lòng kiểm tra lại Access Token.',
-      });
-    } finally {
-      setDirectConnecting(false);
     }
   };
 
@@ -441,108 +394,6 @@ export const Settings: React.FC = () => {
             </button>
           </div>
 
-          {/* TOP PRIMARY CARD: DIRECT ACCESS TOKEN CONNECT & SYNC */}
-          <div className="bg-gradient-to-br from-blue-50/90 via-indigo-50/40 to-white rounded-2xl border-2 border-blue-500/80 shadow-md p-5 sm:p-6 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-blue-100 pb-4">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold shadow-md shadow-blue-500/30 shrink-0">
-                  <Zap className="w-5 h-5 text-yellow-300 fill-current" />
-                </div>
-                <div>
-                  <h2 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight">
-                    Nhập Page Access Token / User Token trực tiếp
-                  </h2>
-                  <p className="text-xs text-slate-600 mt-0.5">
-                    Xử lý trực tiếp 100% trong trang (Không chuyển hướng trình duyệt) • Tự động kích hoạt Webhook & Đồng bộ tin nhắn, bài viết
-                  </p>
-                </div>
-              </div>
-              <span className="text-[11px] px-3 py-1 rounded-full font-bold bg-blue-600 text-white shadow-sm shadow-blue-500/20 self-start sm:self-auto shrink-0">
-                ⚡ Kết nối nhanh 100% ổn định
-              </span>
-            </div>
-
-            <form onSubmit={handleConnectDirectPage} className="space-y-4">
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label htmlFor="direct-token-textarea" className="text-xs font-bold text-slate-800">
-                    Dán Access Token (User Token / Page Token / System Token):
-                  </label>
-                  <a
-                    href="https://developers.facebook.com/tools/explorer"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs text-blue-600 hover:text-blue-800 font-bold inline-flex items-center gap-1 hover:underline"
-                  >
-                    <span>Lấy Token tại Graph API Explorer</span>
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </a>
-                </div>
-                <textarea
-                  id="direct-token-textarea"
-                  required
-                  rows={4}
-                  value={directPageToken}
-                  onChange={(e) => setDirectPageToken(e.target.value)}
-                  placeholder="Dán chuỗi Access Token (bắt đầu bằng EAA...) vào đây để hệ thống tự động lưu Page, kích hoạt Webhook và tải tin nhắn, bài viết về ngay..."
-                  className="w-full text-xs sm:text-sm px-4 py-3 bg-white border-2 border-blue-300 focus:border-blue-600 rounded-xl outline-none font-mono text-slate-800 shadow-inner transition placeholder:text-slate-400"
-                />
-              </div>
-
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
-                <button
-                  type="submit"
-                  disabled={directConnecting}
-                  className="w-full sm:w-auto px-7 py-3 bg-blue-600 hover:bg-blue-700 active:scale-[0.99] text-white rounded-xl text-sm font-bold shadow-lg shadow-blue-500/25 transition flex items-center justify-center gap-2.5 cursor-pointer disabled:opacity-50"
-                >
-                  {directConnecting ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>Đang lưu & Đồng bộ ngầm...</span>
-                    </>
-                  ) : (
-                    <>
-                      <RefreshCw className="w-4 h-4" />
-                      <span>Lưu & Đồng bộ ngay</span>
-                    </>
-                  )}
-                </button>
-
-                <div className="text-[11.5px] text-slate-500 flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
-                  <span>Không chuyển hướng trình duyệt • Tự động mã hóa AES-256 bảo mật</span>
-                </div>
-              </div>
-            </form>
-
-            {/* Quick 3-step Instructions */}
-            <div className="p-3.5 bg-blue-50/70 rounded-xl border border-blue-100 text-xs text-slate-700 space-y-1.5">
-              <p className="font-bold text-blue-950 flex items-center gap-1.5">
-                <HelpCircle className="w-3.5 h-3.5 text-blue-600" />
-                <span>3 bước lấy Token nhanh trong 30 giây:</span>
-              </p>
-              <ol className="list-decimal list-inside space-y-1 text-[11.5px] text-slate-600">
-                <li>
-                  Mở trang{' '}
-                  <a
-                    href="https://developers.facebook.com/tools/explorer"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-blue-600 font-bold underline inline-flex items-center gap-0.5"
-                  >
-                    Meta Graph API Explorer <ExternalLink className="w-3 h-3 inline" />
-                  </a>
-                </li>
-                <li>
-                  Tại ô <b>User or Page</b>: Chọn <b>User Token</b> (sẽ tự động kết nối toàn bộ Fanpage) hoặc chọn đúng tên <b>Page</b> của bạn.
-                </li>
-                <li>
-                  Bấm nút <b>Generate Access Token</b> &gt; Cấp quyền &gt; Sao chép mã <code className="bg-white px-1.5 py-0.5 rounded border border-blue-200 font-mono text-blue-700 font-bold">EAA...</code> dán vào ô trên rồi bấm nút <b>Lưu & Đồng bộ ngay</b>.
-                </li>
-              </ol>
-            </div>
-          </div>
-
           {/* Main Status Header Card */}
           <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm p-5 sm:p-6">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -573,7 +424,7 @@ export const Settings: React.FC = () => {
                   <p className="text-xs text-slate-500 mt-1">
                     {metaHealth?.connected
                       ? `Tài khoản Meta: ${metaHealth.metaUser?.name} • Đang kết nối ${pages.length} Facebook Page thực tế`
-                      : 'Chưa kết nối Page nào. Vui lòng dán Access Token vào ô phía trên và bấm "Lưu & Đồng bộ ngay".'}
+                      : 'Chưa kết nối Page nào. Chỉ cần bấm nút "Kết nối với Facebook ngay" ở trên để kết nối tự động 1-Click.'}
                   </p>
                 </div>
               </div>
