@@ -1,0 +1,414 @@
+// Prisma schema for ZEN Social CRM
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
+
+enum Role {
+  ADMIN
+  MANAGER
+  STAFF
+}
+
+enum CustomerStatus {
+  NEW
+  POTENTIAL
+  PURCHASED
+  VIP
+  CARE_NEEDED
+  COMPLAINT
+  ARCHIVED
+}
+
+enum ConversationStatus {
+  PENDING
+  PROCESSING
+  RESOLVED
+}
+
+enum CommentStatus {
+  PENDING
+  PROCESSING
+  RESOLVED
+  HIDDEN
+}
+
+model Account {
+  id              String           @id @default(uuid())
+  name            String
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  users           User[]
+  metaConnections MetaConnection[]
+  pages           Page[]
+  customers       Customer[]
+  tags            Tag[]
+  auditLogs       AuditLog[]
+  adAccounts      AdAccount[]
+}
+
+model User {
+  id              String           @id @default(uuid())
+  accountId       String
+  account         Account          @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  email           String           @unique
+  password        String
+  fullName        String
+  phone           String?
+  role            Role             @default(STAFF)
+  isActive        Boolean          @default(true)
+  avatar          String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  pagePermissions PagePermission[]
+  assignedConvs   Conversation[]   @relation("UserConversations")
+  assignedComms   Comment[]        @relation("UserComments")
+  assignedCusts   Customer[]       @relation("UserCustomers")
+  customerNotes   CustomerNote[]
+  notifications   Notification[]
+  auditLogs       AuditLog[]
+}
+
+model MetaConnection {
+  id                   String    @id @default(uuid())
+  accountId            String
+  account              Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  metaUserId           String
+  metaUserName         String
+  metaUserEmail        String?
+  encryptedAccessToken String    // AES-256-GCM encrypted long-lived user token
+  tokenExpiresAt       DateTime?
+  status               String    @default("ACTIVE") // ACTIVE, EXPIRED, REVOKED, DISCONNECTED
+  scope                String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  pages                Page[]
+}
+
+model Page {
+  id                   String           @id @default(uuid())
+  accountId            String
+  account              Account          @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  metaConnectionId     String
+  metaConnection       MetaConnection   @relation(fields: [metaConnectionId], references: [id], onDelete: Cascade)
+  metaPageId           String           // Meta's dynamic Page ID (NEVER hardcoded)
+  name                 String           // Dynamic name from Meta API
+  category             String?
+  avatar               String?
+  followersCount       Int              @default(0)
+  encryptedAccessToken String           // AES-256-GCM encrypted Page Access Token
+  isWebhookSubscribed  Boolean          @default(false)
+  isConnected          Boolean          @default(true)
+  instagramBusinessId  String?          // Linked Instagram Business / Creator Account ID
+  instagramUsername    String?          // Linked Instagram Username
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  permissions          PagePermission[]
+  conversations        Conversation[]
+  comments             Comment[]
+  posts                Post[]
+  pageInsights         PageInsight[]
+  messages             Message[]
+  customers            Customer[]
+}
+
+model PagePermission {
+  id                String   @id @default(uuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  pageId            String
+  page              Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  canChat           Boolean  @default(true)
+  canComment        Boolean  @default(true)
+  canViewPosts      Boolean  @default(true)
+  canViewAds        Boolean  @default(false)
+  canManageSettings Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([userId, pageId])
+}
+
+model Customer {
+  id                String          @id @default(uuid())
+  accountId         String
+  account           Account         @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  primaryPageId     String?
+  primaryPage       Page?           @relation(fields: [primaryPageId], references: [id], onDelete: SetNull)
+  metaId            String          // PSID or user identifier compliant with Meta policy
+  name              String
+  avatar            String?
+  phone             String?
+  email             String?
+  status            CustomerStatus  @default(NEW)
+  assignedUserId    String?
+  assignedUser      User?           @relation("UserCustomers", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  lastInteractionAt DateTime        @default(now())
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  conversations     Conversation[]
+  comments          Comment[]
+  tags              CustomerTag[]
+  notes             CustomerNote[]
+
+  @@unique([accountId, metaId])
+}
+
+model Tag {
+  id        String        @id @default(uuid())
+  accountId String
+  account   Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name      String
+  color     String        @default("#10B981") // Default Green
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  customers CustomerTag[]
+
+  @@unique([accountId, name])
+}
+
+model CustomerTag {
+  id         String   @id @default(uuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  tagId      String
+  tag        Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, tagId])
+}
+
+model CustomerNote {
+  id         String   @id @default(uuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content    String
+  createdAt  DateTime @default(now())
+}
+
+model Conversation {
+  id                 String             @id @default(uuid())
+  pageId             String
+  page               Page               @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  customerId         String
+  customer           Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  metaConversationId String?            // Meta's thread/conversation ID
+  snippet            String?            // Last message preview
+  unreadCount        Int                @default(0)
+  status             ConversationStatus @default(PENDING)
+  assignedUserId     String?
+  assignedUser       User?              @relation("UserConversations", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  lastMessageAt      DateTime           @default(now())
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  messages           Message[]
+
+  @@unique([pageId, customerId])
+}
+
+model Message {
+  id             String       @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  pageId         String
+  page           Page         @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  metaMessageId  String?      @unique // Meta mid
+  senderType     String       // CUSTOMER, PAGE, SYSTEM
+  senderId       String       // PSID or Page ID
+  senderName     String?
+  text           String
+  attachments    String?      // JSON encoded attachments
+  isRead         Boolean      @default(false)
+  sentStatus     String       @default("SENT") // SENT, DELIVERED, READ, FAILED
+  errorMessage   String?
+  createdAt      DateTime     @default(now())
+}
+
+model Post {
+  id           String    @id @default(uuid())
+  pageId       String
+  page         Page      @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  metaPostId   String    @unique // Meta post ID
+  message      String?
+  permalinkUrl String?
+  picture      String?
+  videoUrl     String?
+  likeCount    Int       @default(0)
+  commentCount Int       @default(0)
+  shareCount   Int       @default(0)
+  reachCount   Int       @default(0)
+  publishedAt  DateTime  @default(now())
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  comments     Comment[]
+}
+
+model Comment {
+  id                String        @id @default(uuid())
+  pageId            String
+  page              Page          @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  postId            String
+  post              Post          @relation(fields: [postId], references: [id], onDelete: Cascade)
+  metaCommentId     String        @unique // Meta comment ID
+  parentId          String?
+  parent            Comment?      @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies           Comment[]     @relation("CommentReplies")
+  customerId        String?
+  customer          Customer?     @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  authorName        String
+  authorMetaId      String
+  message           String
+  status            CommentStatus @default(PENDING)
+  assignedUserId    String?
+  assignedUser      User?         @relation("UserComments", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  isFromPage        Boolean       @default(false)
+  canReplyPrivately Boolean       @default(false)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+}
+
+model AdAccount {
+  id              String      @id @default(uuid())
+  accountId       String
+  account         Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  metaAdAccountId String      @unique
+  name            String
+  currency        String      @default("VND")
+  accountStatus   Int         @default(1)
+  amountSpent     Float       @default(0)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  campaigns       Campaign[]
+}
+
+model Campaign {
+  id             String     @id @default(uuid())
+  adAccountId    String
+  adAccount      AdAccount  @relation(fields: [adAccountId], references: [id], onDelete: Cascade)
+  metaCampaignId String     @unique
+  name           String
+  objective      String?
+  status         String     @default("ACTIVE")
+  dailyBudget    Float?
+  lifetimeBudget Float?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  adSets         AdSet[]
+}
+
+model AdSet {
+  id          String   @id @default(uuid())
+  campaignId  String
+  campaign    Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  metaAdSetId String   @unique
+  name        String
+  status      String   @default("ACTIVE")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  ads         Ad[]
+}
+
+model Ad {
+  id         String      @id @default(uuid())
+  adSetId    String
+  adSet      AdSet       @relation(fields: [adSetId], references: [id], onDelete: Cascade)
+  metaAdId   String      @unique
+  name       String
+  status     String      @default("ACTIVE")
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  insights   AdInsight[]
+}
+
+model AdInsight {
+  id            String   @id @default(uuid())
+  adId          String?
+  ad            Ad?      @relation(fields: [adId], references: [id], onDelete: Cascade)
+  campaignId    String?
+  adAccountId   String
+  date          DateTime @default(now())
+  spend         Float    @default(0)
+  reach         Int      @default(0)
+  impressions   Int      @default(0)
+  clicks        Int      @default(0)
+  ctr           Float    @default(0)
+  cpc           Float    @default(0)
+  cpm           Float    @default(0)
+  results       Int      @default(0)
+  costPerResult Float    @default(0)
+  createdAt     DateTime @default(now())
+}
+
+model PageInsight {
+  id             String   @id @default(uuid())
+  pageId         String
+  page           Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  date           DateTime @default(now())
+  followersCount Int      @default(0)
+  reach          Int      @default(0)
+  impressions    Int      @default(0)
+  engagement     Int      @default(0)
+  reactions      Int      @default(0)
+  commentsCount  Int      @default(0)
+  sharesCount    Int      @default(0)
+  messagesCount  Int      @default(0)
+  pageViews      Int      @default(0)
+  videoViews     Int      @default(0)
+  createdAt      DateTime @default(now())
+}
+
+model Notification {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String
+  message     String
+  type        String   // MESSENGER, COMMENT, ASSIGNMENT, META_CONNECTION, SYSTEM
+  pageId      String?
+  referenceId String?
+  isRead      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+}
+
+model WebhookEvent {
+  id          String   @id @default(uuid())
+  metaEventId String?
+  eventType   String
+  pageId      String?
+  payload     String
+  processed   Boolean  @default(false)
+  error       String?
+  receivedAt  DateTime @default(now())
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  accountId  String
+  account    Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String
+  targetType String
+  targetId   String?
+  details    String?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+}
