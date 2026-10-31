@@ -221,18 +221,24 @@ export const Messenger: React.FC = () => {
     loadMetadata();
   }, []);
 
-  // Fetch conversations on filter / page change
+  // Fetch conversations on filter / page change + trigger automatic Meta sync
   useEffect(() => {
     fetchConversations();
+    handleSyncMessages(true);
   }, [selectedPageId, statusFilter]);
 
-  // High-speed silent background poll (every 2 seconds - local database query takes <5ms)
+  // High-speed silent background poll (every 2 seconds for local DB, every 10 seconds from Meta Graph API)
   useEffect(() => {
+    let tick = 0;
     const timer = setInterval(() => {
+      tick++;
       fetchConversations(true);
       const currentId = activeConvIdRef.current;
       if (currentId) {
         fetchConversationDetails(currentId, true);
+      }
+      if (tick % 5 === 0) {
+        handleSyncMessages(true);
       }
     }, 2000);
 

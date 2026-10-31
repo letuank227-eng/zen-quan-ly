@@ -101,7 +101,7 @@ export class MetaGraphService {
 
   /**
    * Retrieves customer profile (name, first_name, last_name, profile_pic) using PSID/User ID and Page Access Token
-   * Automatically falls back to /picture endpoint if profile_pic field is restricted.
+   * Queries Messenger PSID fields and Graph /picture edge in parallel for maximum speed and reliability.
    */
   static async getCustomerProfile(psid: string, pageAccessToken: string) {
     if (!psid || psid.startsWith('user_')) return null;
@@ -111,59 +111,49 @@ export class MetaGraphService {
     let lastName: string | undefined;
     let profilePic: string | undefined;
 
-    // Step 1: Try full Messenger PSID profile fields + picture edge
-    try {
-      const response = await axios.get(`${GRAPH_BASE_URL}/${psid}`, {
+    const [psidRes, picEdgeRes, basicRes] = await Promise.allSettled([
+      axios.get(`${GRAPH_BASE_URL}/${psid}`, {
         params: {
-          fields: 'id,name,first_name,last_name,profile_pic,picture.width(200).height(200){url}',
+          fields: 'id,name,first_name,last_name,profile_pic',
           access_token: pageAccessToken,
         },
-        timeout: 4500,
-      });
-      const d = response.data;
-      if (d) {
-        name = d.name || [d.first_name, d.last_name].filter(Boolean).join(' ') || undefined;
-        firstName = d.first_name;
-        lastName = d.last_name;
-        profilePic = d.profile_pic || d.picture?.data?.url;
-      }
-    } catch {
-      // Step 2: Fallback for Comment User IDs or restricted PSIDs where profile_pic field is not allowed
-      try {
-        const fallbackRes = await axios.get(`${GRAPH_BASE_URL}/${psid}`, {
-          params: {
-            fields: 'id,name,picture.width(200).height(200){url}',
-            access_token: pageAccessToken,
-          },
-          timeout: 4000,
-        });
-        const d = fallbackRes.data;
-        if (d) {
-          name = d.name || undefined;
-          profilePic = d.picture?.data?.url;
-        }
-      } catch {}
+        timeout: 3500,
+      }),
+      axios.get(`${GRAPH_BASE_URL}/${psid}/picture`, {
+        params: {
+          redirect: false,
+          type: 'large',
+          width: 200,
+          height: 200,
+          access_token: pageAccessToken,
+        },
+        timeout: 3500,
+      }),
+      axios.get(`${GRAPH_BASE_URL}/${psid}`, {
+        params: {
+          fields: 'id,name,picture.width(200).height(200){url}',
+          access_token: pageAccessToken,
+        },
+        timeout: 3500,
+      }),
+    ]);
+
+    if (psidRes.status === 'fulfilled' && psidRes.value.data) {
+      const d = psidRes.value.data;
+      name = d.name || [d.first_name, d.last_name].filter(Boolean).join(' ') || undefined;
+      firstName = d.first_name;
+      lastName = d.last_name;
+      if (d.profile_pic) profilePic = d.profile_pic;
     }
 
-    // Step 3: If still missing avatar, query /{psid}/picture?redirect=false&type=large directly
-    if (!profilePic) {
-      try {
-        const picRes = await axios.get(`${GRAPH_BASE_URL}/${psid}/picture`, {
-          params: {
-            redirect: false,
-            type: 'large',
-            width: 200,
-            height: 200,
-            access_token: pageAccessToken,
-          },
-          timeout: 3500,
-        });
-        if (picRes.data?.data?.url && !picRes.data?.data?.is_silhouette) {
-          profilePic = picRes.data.data.url;
-        } else if (picRes.data?.data?.url) {
-          profilePic = picRes.data.data.url;
-        }
-      } catch {}
+    if (basicRes.status === 'fulfilled' && basicRes.value.data) {
+      const d = basicRes.value.data;
+      if (!name && d.name) name = d.name;
+      if (!profilePic && d.picture?.data?.url) profilePic = d.picture.data.url;
+    }
+
+    if (!profilePic && picEdgeRes.status === 'fulfilled' && picEdgeRes.value.data?.data?.url) {
+      profilePic = picEdgeRes.value.data.data.url;
     }
 
     if (!name && !profilePic) return null;
@@ -318,7 +308,7 @@ export class MetaGraphService {
     try {
       const response = await axios.get(`${GRAPH_BASE_URL}/${pageId}/conversations`, {
         params: {
-          fields: 'id,snippet,updated_time,unread_count,senders,messages.limit(20){id,message,created_time,from,attachments}',
+          fields: 'id,snippet,updated_time,unread_count,senders,participants,messages.limit(25){id,message,created_time,from,attachments{id,mime_type,name,size,image_data,file_url}}',
           limit,
           access_token: pageAccessToken,
         },
@@ -641,7 +631,7 @@ export class MetaGraphService {
   }
 
   /**
-   * Fetches all real customer comments across all media (videos and photos) on the Page
+   * Fetches all real customer comments across posts, feed, videos, and photos on the Page in parallel (fast for Serverless)
    */
   static async fetchAllPageMediaComments(pageId: string, pageAccessToken: string) {
     const allComments: Array<{
@@ -654,46 +644,71 @@ export class MetaGraphService {
       mediaId: string;
       mediaDescription?: string;
     }> = [];
+    const seenCommentIds = new Set<string>();
+
+    const extractCommentsFromItems = (items: any[]) => {
+      for (const item of items || []) {
+        const mediaId = item.id;
+        const mediaDescription = item.message || item.description || item.name || undefined;
+        const commentsList = item.comments?.data || [];
+        for (const c of commentsList) {
+          if (!c?.id || seenCommentIds.has(c.id)) continue;
+          seenCommentIds.add(c.id);
+          allComments.push({
+            commentId: c.id,
+            message: c.message || '',
+            created_time: c.created_time,
+            authorName: c.from?.name || 'Khách hàng Facebook',
+            authorMetaId: c.from?.id || `user_${c.id}`,
+            authorAvatar: c.from?.picture?.data?.url || null,
+            mediaId,
+            mediaDescription,
+          });
+        }
+      }
+    };
 
     try {
-      // 1. Scan videos
-      let nextUrl: string | null = `${GRAPH_BASE_URL}/${pageId}/videos?fields=id,description,created_time&limit=25&access_token=${pageAccessToken}`;
-      let videoCount = 0;
+      const commentSubfields = 'comments.limit(30){id,message,created_time,from{id,name,picture.width(200).height(200){url}}}';
+      const [feedRes, postsRes, videosRes, photosRes] = await Promise.allSettled([
+        axios.get(`${GRAPH_BASE_URL}/${pageId}/feed`, {
+          params: {
+            fields: `id,message,created_time,${commentSubfields}`,
+            limit: 25,
+            access_token: pageAccessToken,
+          },
+          timeout: 6000,
+        }),
+        axios.get(`${GRAPH_BASE_URL}/${pageId}/posts`, {
+          params: {
+            fields: `id,message,created_time,${commentSubfields}`,
+            limit: 25,
+            access_token: pageAccessToken,
+          },
+          timeout: 6000,
+        }),
+        axios.get(`${GRAPH_BASE_URL}/${pageId}/videos`, {
+          params: {
+            fields: `id,description,created_time,${commentSubfields}`,
+            limit: 25,
+            access_token: pageAccessToken,
+          },
+          timeout: 6000,
+        }),
+        axios.get(`${GRAPH_BASE_URL}/${pageId}/photos`, {
+          params: {
+            type: 'uploaded',
+            fields: `id,name,created_time,${commentSubfields}`,
+            limit: 25,
+            access_token: pageAccessToken,
+          },
+          timeout: 6000,
+        }),
+      ]);
 
-      while (nextUrl && videoCount < 75) {
-        try {
-          const res: any = await axios.get(nextUrl);
-          const videos = res.data?.data || [];
-          videoCount += videos.length;
-
-          for (const v of videos) {
-            try {
-              const cRes = await axios.get(`${GRAPH_BASE_URL}/${v.id}/comments`, {
-                params: {
-                  fields: 'id,message,created_time,from{id,name,picture.width(200).height(200){url}}',
-                  limit: 25,
-                  access_token: pageAccessToken,
-                },
-              });
-              for (const c of cRes.data.data || []) {
-                allComments.push({
-                  commentId: c.id,
-                  message: c.message || '',
-                  created_time: c.created_time,
-                  authorName: c.from?.name || 'Khách hàng Facebook',
-                  authorMetaId: c.from?.id || `user_${c.id}`,
-                  authorAvatar: c.from?.picture?.data?.url || null,
-                  mediaId: v.id,
-                  mediaDescription: v.description,
-                });
-              }
-            } catch (vErr) {
-              // skip non-commentable video
-            }
-          }
-          nextUrl = res.data.paging?.next || null;
-        } catch (pageErr) {
-          break;
+      for (const r of [feedRes, postsRes, videosRes, photosRes]) {
+        if (r.status === 'fulfilled' && r.value.data?.data) {
+          extractCommentsFromItems(r.value.data.data);
         }
       }
     } catch (e: any) {

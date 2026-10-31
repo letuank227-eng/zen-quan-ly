@@ -10,11 +10,15 @@ const api = axios.create({
   },
 });
 
-// Attach Authorization Bearer token if stored in localStorage
+// Attach Authorization Bearer token and Meta token backup bundle if stored in localStorage
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('zen_token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
+  }
+  const metaTokens = localStorage.getItem('zen_meta_tokens');
+  if (metaTokens) {
+    config.headers['x-meta-tokens'] = metaTokens;
   }
   return config;
 });

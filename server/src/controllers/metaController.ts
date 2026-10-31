@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
+import axios from 'axios';
 import prisma from '../prisma/client';
 import { AuthRequest } from '../middleware/auth';
 import { MetaGraphService } from '../services/metaGraphService';
@@ -170,11 +171,18 @@ export class MetaController {
 
       // Auto-connect ALL managed pages immediately for a true 1-click experience!
       let autoConnectedCount = 0;
+      const syncTasks: Promise<any>[] = [];
+      const pageTokenBackupMap: Record<string, { token: string; name: string; avatar: string | null }> = {};
       try {
         const rawPages = await MetaGraphService.getManagedPages(userAccessToken);
         for (const found of rawPages) {
           const pageAccessToken = found.access_token;
           const encryptedPageToken = encryptToken(pageAccessToken);
+          pageTokenBackupMap[found.id] = {
+            token: encryptedPageToken,
+            name: found.name,
+            avatar: found.picture?.data?.url || null,
+          };
           // 1. Auto-subscribe webhook for real-time messages, feed comments
           const isSubscribed = await MetaGraphService.subscribePageToWebhook(found.id, pageAccessToken);
 
@@ -222,18 +230,45 @@ export class MetaController {
           });
 
           // 2. Trigger automatic initial background sync (Posts, Comments, Conversations, Ads, IG)
-          triggerInitialPageSync({
-            pageId: page.id,
-            accountId: stateData.accountId,
-            userId: stateData.userId,
-            userAccessToken,
-          });
+          syncTasks.push(
+            triggerInitialPageSync({
+              pageId: page.id,
+              accountId: stateData.accountId,
+              userId: stateData.userId,
+              userAccessToken,
+            })
+          );
 
           autoConnectedCount++;
         }
       } catch (pageErr: any) {
         logger.warn('Auto-connect pages during OAuth warning:', pageErr.message);
       }
+
+      // Wait up to 7 seconds on Serverless so initial messages/comments/avatars are synced before container freezes
+      if (syncTasks.length > 0) {
+        await Promise.race([
+          Promise.allSettled(syncTasks),
+          new Promise((resolve) => setTimeout(resolve, 7000)),
+        ]);
+      }
+
+      // Build encrypted token bundle cookie + postMessage backup so all Serverless instances stay hydrated
+      const metaTokensBundle = Buffer.from(
+        JSON.stringify({
+          accountId: stateData.accountId,
+          userId: stateData.userId,
+          metaUserId: String(metaUser.id),
+          metaUserName: metaUser.name,
+          userToken: encryptedUserToken,
+          pages: pageTokenBackupMap,
+        })
+      ).toString('base64');
+
+      res.setHeader(
+        'Set-Cookie',
+        `zen_meta_tokens=${encodeURIComponent(metaTokensBundle)}; Path=/; Max-Age=5184000; SameSite=Lax`
+      );
 
       // Return self-closing Popup HTML (like Pancake 1-Click) or redirect if not opened as popup
       const successUrl = `${frontendUrl}/settings?meta_success=true&count=${autoConnectedCount}`;
@@ -247,8 +282,9 @@ export class MetaController {
   </div>
   <script>
     try {
+      try { localStorage.setItem('zen_meta_tokens', ${JSON.stringify(metaTokensBundle)}); } catch (e) {}
       if (window.opener && !window.opener.closed) {
-        window.opener.postMessage({ type: 'META_OAUTH_SUCCESS', count: ${autoConnectedCount} }, '*');
+        window.opener.postMessage({ type: 'META_OAUTH_SUCCESS', count: ${autoConnectedCount}, metaTokensBundle: ${JSON.stringify(metaTokensBundle)} }, '*');
         setTimeout(function() { window.close(); }, 400);
       } else {
         window.location.href = ${JSON.stringify(successUrl)};
@@ -1023,8 +1059,49 @@ export class MetaController {
   }
 
   /**
+   * Trigger full sync across all connected pages (Conversations, Messages, Comments, Posts, Avatars)
+   */
+  static async syncAllPages(req: AuthRequest, res: Response) {
+    try {
+      if (!req.user) return res.status(401).json({ success: false, message: 'Chưa đăng nhập.' });
+
+      const pages = await prisma.page.findMany({
+        where: { accountId: req.user.accountId, isConnected: true },
+      });
+
+      if (pages.length === 0) {
+        return res.json({ success: true, count: 0, message: 'Chưa có Fanpage nào được kết nối.' });
+      }
+
+      const metaConn = await prisma.metaConnection.findFirst({
+        where: { accountId: req.user.accountId, status: 'ACTIVE' },
+      });
+      const userAccessToken = metaConn ? decryptToken(metaConn.encryptedAccessToken) : undefined;
+
+      await Promise.allSettled(
+        pages.map((p) =>
+          triggerInitialPageSync({
+            pageId: p.id,
+            accountId: req.user!.accountId,
+            userId: req.user!.id,
+            userAccessToken,
+          })
+        )
+      );
+
+      return res.json({
+        success: true,
+        count: pages.length,
+        message: `Đã đồng bộ xong dữ liệu tin nhắn, bình luận và ảnh đại diện của ${pages.length} Fanpage!`,
+      });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, message: 'Lỗi đồng bộ dữ liệu: ' + error.message });
+    }
+  }
+
+  /**
    * Live Customer Avatar Resolver & Proxy (/api/meta/avatar/:metaId)
-   * Automatically resolves and caches the customer's real Facebook avatar & name on demand.
+   * Automatically resolves, proxies image bytes, and caches the customer's real Facebook avatar & name on demand.
    */
   static async resolveCustomerAvatar(req: Request, res: Response) {
     try {
@@ -1038,37 +1115,74 @@ export class MetaController {
         include: { primaryPage: true },
       });
 
-      let page = customer?.primaryPage;
-      if (!page || !page.isConnected) {
-        page = await prisma.page.findFirst({
-          where: { isConnected: true },
-        });
-      }
+      const connectedPages = await prisma.page.findMany({
+        where: { isConnected: true },
+      });
 
-      if (!page) {
-        return res.status(404).end();
-      }
+      const orderedPages = [
+        ...(customer?.primaryPage && customer.primaryPage.isConnected ? [customer.primaryPage] : []),
+        ...connectedPages.filter((p) => p.id !== customer?.primaryPageId),
+      ];
 
-      const pageToken = decryptToken(page.encryptedAccessToken);
-      if (!pageToken) {
-        return res.status(404).end();
-      }
+      for (const page of orderedPages) {
+        const pageToken = decryptToken(page.encryptedAccessToken);
+        if (!pageToken) continue;
 
-      const profile = await MetaGraphService.getCustomerProfile(metaId, pageToken);
-      if (profile?.profile_pic) {
-        if (customer) {
-          const shouldUpdateName =
-            profile.name &&
-            (customer.name.startsWith('Khách hàng') || customer.name.startsWith('Người dùng'));
-          await prisma.customer.update({
-            where: { id: customer.id },
-            data: {
-              avatar: profile.profile_pic,
-              ...(shouldUpdateName ? { name: profile.name } : {}),
+        // 1. Try streaming directly from Graph /picture edge (follows redirect to CDN on server side)
+        try {
+          const directImg = await axios.get(`https://graph.facebook.com/v19.0/${metaId}/picture`, {
+            params: {
+              width: 200,
+              height: 200,
+              type: 'large',
+              access_token: pageToken,
             },
-          }).catch(() => {});
-        }
-        return res.redirect(302, profile.profile_pic);
+            responseType: 'arraybuffer',
+            timeout: 4500,
+          });
+          if (directImg.data && directImg.data.byteLength > 100) {
+            const contentType = String(directImg.headers['content-type'] || 'image/jpeg');
+            res.setHeader('Content-Type', contentType);
+            res.setHeader('Cache-Control', 'public, max-age=86400');
+            return res.send(Buffer.from(directImg.data));
+          }
+        } catch {}
+
+        // 2. Fallback: Resolve profile_pic URL via getCustomerProfile and stream its image bytes
+        try {
+          const profile = await MetaGraphService.getCustomerProfile(metaId, pageToken);
+          if (profile?.profile_pic) {
+            if (customer) {
+              const shouldUpdateName =
+                profile.name &&
+                (customer.name.startsWith('Khách hàng') || customer.name.startsWith('Người dùng'));
+              await prisma.customer
+                .update({
+                  where: { id: customer.id },
+                  data: {
+                    avatar: profile.profile_pic,
+                    ...(shouldUpdateName ? { name: profile.name } : {}),
+                  },
+                })
+                .catch(() => {});
+            }
+
+            try {
+              const cdnImg = await axios.get(profile.profile_pic, {
+                responseType: 'arraybuffer',
+                timeout: 4500,
+              });
+              if (cdnImg.data && cdnImg.data.byteLength > 100) {
+                const contentType = String(cdnImg.headers['content-type'] || 'image/jpeg');
+                res.setHeader('Content-Type', contentType);
+                res.setHeader('Cache-Control', 'public, max-age=86400');
+                return res.send(Buffer.from(cdnImg.data));
+              }
+            } catch {
+              return res.redirect(302, profile.profile_pic);
+            }
+          }
+        } catch {}
       }
 
       return res.status(404).end();

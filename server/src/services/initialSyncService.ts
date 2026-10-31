@@ -22,8 +22,7 @@ export interface InitialSyncParams {
 export async function triggerInitialPageSync(params: InitialSyncParams) {
   const { pageId, accountId, userId } = params;
 
-  // Run in background asynchronously (fire-and-forget so UI response is instant)
-  setImmediate(async () => {
+  const runSync = async () => {
     logger.info(`🚀 Starting Initial Auto-Sync for Page ${pageId} (Account: ${accountId})...`);
 
     try {
@@ -513,5 +512,11 @@ export async function triggerInitialPageSync(params: InitialSyncParams) {
     } catch (err: any) {
       logger.error(`Initial Auto-Sync error for Page ${pageId}:`, err.message);
     }
-  });
+  };
+
+  if (process.env.VERCEL) {
+    await runSync();
+  } else {
+    setImmediate(runSync);
+  }
 }

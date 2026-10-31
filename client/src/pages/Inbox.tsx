@@ -66,7 +66,31 @@ export const Inbox: React.FC = () => {
 
   useEffect(() => {
     fetchInbox();
+    api
+      .post('/messenger/sync', {}, {
+        params: {
+          pageId: selectedPageId !== 'all' ? selectedPageId : undefined,
+          limit: 8,
+        },
+      })
+      .then(() => fetchInbox())
+      .catch(() => {});
   }, [typeFilter, statusFilter, selectedPageId]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      api
+        .post('/messenger/sync', {}, {
+          params: {
+            pageId: selectedPageId !== 'all' ? selectedPageId : undefined,
+            limit: 6,
+          },
+        })
+        .then(() => fetchInbox())
+        .catch(() => {});
+    }, 12000);
+    return () => clearInterval(timer);
+  }, [selectedPageId]);
 
   // Realtime updates
   useEffect(() => {

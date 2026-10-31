@@ -19,6 +19,7 @@ router.post('/disconnect-account', authenticate, requireAdmin, MetaController.di
 router.get('/health', authenticate, MetaController.checkHealth);
 router.get('/settings', authenticate, requireAdmin, MetaController.getSettings);
 router.post('/settings', authenticate, requireAdmin, MetaController.saveSettings);
+router.post('/sync-all', authenticate, MetaController.syncAllPages);
 
 // Live customer avatar resolver
 router.get('/avatar/:metaId', MetaController.resolveCustomerAvatar);

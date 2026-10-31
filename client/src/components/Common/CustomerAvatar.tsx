@@ -53,6 +53,9 @@ export const CustomerAvatar: React.FC<CustomerAvatarProps> = ({
   const canUseProxy = Boolean(metaId && !metaId.startsWith('user_') && /^\d+$/.test(metaId));
   const proxyUrl = canUseProxy ? `/api/meta/avatar/${metaId}` : null;
 
+  // Prefer local uploaded avatars directly; for Facebook CDN URLs or missing avatars, prefer proxyUrl so expired CDN signatures never fail
+  const isCustomLocalAvatar = Boolean(avatar && avatar.startsWith('/uploads/'));
+
   useEffect(() => {
     setImageError(false);
     setTriedProxy(false);
@@ -63,10 +66,13 @@ export const CustomerAvatar: React.FC<CustomerAvatarProps> = ({
   const sizeClass = SIZE_CLASSES[size] || SIZE_CLASSES.md;
   const shapeClass = shape === 'circle' ? 'rounded-full' : 'rounded-2xl';
 
+  const primarySrc = isCustomLocalAvatar ? avatar : proxyUrl || avatar;
+  const fallbackSrc = primarySrc === proxyUrl ? avatar : proxyUrl;
+
   const currentSrc = !imageError
-    ? avatar || proxyUrl
-    : !triedProxy && avatar && proxyUrl
-    ? proxyUrl
+    ? primarySrc
+    : !triedProxy && fallbackSrc
+    ? fallbackSrc
     : null;
 
   if (currentSrc) {

@@ -102,29 +102,53 @@ export const Comments: React.FC = () => {
     }
   };
 
-  const handleSyncFromMeta = async () => {
-    const targetPageId = selectedPageId !== 'all' ? selectedPageId : pages[0]?.id;
-    if (!targetPageId) return;
+  const handleSyncFromMeta = async (silentArg: any = false) => {
+    const silent = silentArg === true;
+    const targetPages =
+      selectedPageId !== 'all'
+        ? pages.filter((p) => p.id === selectedPageId)
+        : pages;
+    if (targetPages.length === 0) return;
 
-    setSyncingMeta(true);
-    setActionError(null);
-    setActionSuccess(null);
+    if (!silent) {
+      setSyncingMeta(true);
+      setActionError(null);
+      setActionSuccess(null);
+    }
     try {
-      const res = await api.post(`/comments/sync/${targetPageId}`);
-      if (res.data.success) {
-        setActionSuccess(res.data.message);
-        fetchComments();
+      const results = await Promise.allSettled(
+        targetPages.map((p) => api.post(`/comments/sync/${p.id}`))
+      );
+      let total = 0;
+      for (const r of results) {
+        if (r.status === 'fulfilled' && r.value.data?.totalSynced) {
+          total += Number(r.value.data.totalSynced) || 0;
+        }
       }
+      if (!silent) {
+        setActionSuccess(`Đã đồng bộ ${total} bình luận từ Meta Facebook.`);
+      }
+      fetchComments();
     } catch (err: any) {
-      setActionError(err.response?.data?.message || 'Đồng bộ bình luận từ Meta thất bại.');
+      if (!silent) {
+        setActionError(err.response?.data?.message || 'Đồng bộ bình luận từ Meta thất bại.');
+      }
     } finally {
-      setSyncingMeta(false);
+      if (!silent) setSyncingMeta(false);
     }
   };
 
   useEffect(() => {
     fetchComments();
-  }, [selectedPageId, statusFilter]);
+    handleSyncFromMeta(true);
+  }, [selectedPageId, statusFilter, pages.length]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      handleSyncFromMeta(true);
+    }, 15000);
+    return () => clearInterval(timer);
+  }, [selectedPageId, pages.length]);
 
   // Realtime comments listener
   useEffect(() => {

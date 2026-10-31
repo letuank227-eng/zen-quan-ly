@@ -126,13 +126,23 @@ export const Settings: React.FC = () => {
 
     const handlePopupMessage = (event: MessageEvent) => {
       if (event.data?.type === 'META_OAUTH_SUCCESS') {
+        if (event.data.metaTokensBundle) {
+          try {
+            localStorage.setItem('zen_meta_tokens', event.data.metaTokensBundle);
+            document.cookie = `zen_meta_tokens=${encodeURIComponent(event.data.metaTokensBundle)}; path=/; max-age=5184000; SameSite=Lax`;
+          } catch {}
+        }
         setStatusMessage({
           type: 'success',
-          text: `🎉 Kết nối thành công ${event.data.count || ''} Fanpage thật! Đang đồng bộ tin nhắn & bình luận tự động...`,
+          text: `🎉 Kết nối thành công ${event.data.count || ''} Fanpage thật! Đang đồng bộ tin nhắn, bình luận & ảnh đại diện khách hàng...`,
         });
         refreshPages();
         refreshUser();
         fetchMetaStatus();
+        api.post('/meta/sync-all').then(() => {
+          refreshPages();
+          fetchMetaStatus();
+        }).catch(() => {});
       } else if (event.data?.type === 'META_OAUTH_ERROR') {
         setStatusMessage({
           type: 'error',

@@ -10,6 +10,7 @@ dotenv.config();
 
 import { initSocketServer } from './services/socketService';
 import { logger } from './utils/logger';
+import prisma from './prisma/client';
 
 // Routes
 import authRoutes from './routes/authRoutes';
@@ -58,7 +59,7 @@ app.use(
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-hub-signature-256'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-hub-signature-256', 'x-meta-tokens'],
   })
 );
 
@@ -74,6 +75,81 @@ app.use(
 
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
+
+// Serverless Token Hydration Middleware: Ensures ephemeral /tmp/dev.db on Vercel instances stays hydrated with the user's connected Page tokens
+const hydratedBundles = new Set<string>();
+app.use(async (req: Request, _res: Response, next: NextFunction) => {
+  try {
+    const rawBundle = (req.headers['x-meta-tokens'] as string) || req.cookies?.zen_meta_tokens;
+    if (rawBundle && !hydratedBundles.has(rawBundle)) {
+      hydratedBundles.add(rawBundle);
+      const decoded = JSON.parse(Buffer.from(decodeURIComponent(rawBundle), 'base64').toString('utf8'));
+      if (decoded?.accountId && decoded?.userToken && decoded?.pages) {
+        const existingConn = await prisma.metaConnection.findFirst({
+          where: { accountId: decoded.accountId },
+        });
+        let connId = existingConn?.id;
+        if (existingConn) {
+          await prisma.metaConnection.update({
+            where: { id: existingConn.id },
+            data: {
+              metaUserId: String(decoded.metaUserId || existingConn.metaUserId),
+              metaUserName: decoded.metaUserName || existingConn.metaUserName,
+              encryptedAccessToken: decoded.userToken,
+              status: 'ACTIVE',
+            },
+          });
+        } else {
+          const created = await prisma.metaConnection.create({
+            data: {
+              accountId: decoded.accountId,
+              metaUserId: String(decoded.metaUserId || 'meta_user'),
+              metaUserName: decoded.metaUserName || 'Meta User',
+              encryptedAccessToken: decoded.userToken,
+              status: 'ACTIVE',
+            },
+          });
+          connId = created.id;
+        }
+
+        if (connId) {
+          for (const [metaPageId, pInfo] of Object.entries<any>(decoded.pages)) {
+            if (!pInfo?.token) continue;
+            const existingPage = await prisma.page.findFirst({
+              where: { accountId: decoded.accountId, metaPageId },
+            });
+            if (existingPage) {
+              await prisma.page.update({
+                where: { id: existingPage.id },
+                data: {
+                  encryptedAccessToken: pInfo.token,
+                  isConnected: true,
+                  isWebhookSubscribed: true,
+                  ...(pInfo.name ? { name: pInfo.name } : {}),
+                  ...(pInfo.avatar ? { avatar: pInfo.avatar } : {}),
+                },
+              });
+            } else {
+              await prisma.page.create({
+                data: {
+                  accountId: decoded.accountId,
+                  metaConnectionId: connId,
+                  metaPageId,
+                  name: pInfo.name || `Page ${metaPageId}`,
+                  avatar: pInfo.avatar || null,
+                  encryptedAccessToken: pInfo.token,
+                  isConnected: true,
+                  isWebhookSubscribed: true,
+                },
+              });
+            }
+          }
+        }
+      }
+    }
+  } catch {}
+  next();
+});
 
 // Static uploads directory (attachments, custom avatars)
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
