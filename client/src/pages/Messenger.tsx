@@ -237,7 +237,7 @@ export const Messenger: React.FC = () => {
       if (currentId) {
         fetchConversationDetails(currentId, true);
       }
-      if (tick % 5 === 0) {
+      if (tick % 45 === 0) {
         handleSyncMessages(true);
       }
     }, 2000);

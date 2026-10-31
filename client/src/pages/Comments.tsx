@@ -140,15 +140,12 @@ export const Comments: React.FC = () => {
 
   useEffect(() => {
     fetchComments();
-    handleSyncFromMeta(true);
-  }, [selectedPageId, statusFilter, pages.length]);
+  }, [selectedPageId, statusFilter]);
 
+  // Sync from Meta once when page list is ready (webhooks deliver new comments in realtime afterwards)
   useEffect(() => {
-    const timer = setInterval(() => {
-      handleSyncFromMeta(true);
-    }, 15000);
-    return () => clearInterval(timer);
-  }, [selectedPageId, pages.length]);
+    if (pages.length > 0) handleSyncFromMeta(true);
+  }, [pages.length]);
 
   // Realtime comments listener
   useEffect(() => {

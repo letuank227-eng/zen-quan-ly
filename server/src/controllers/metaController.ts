@@ -1115,6 +1115,26 @@ export class MetaController {
         include: { primaryPage: true },
       });
 
+      // 0. Serve stored avatar first (pure CDN fetch, zero Graph API quota usage)
+      if (customer?.avatar && /^https?:\/\//.test(customer.avatar)) {
+        try {
+          const stored = await axios.get(customer.avatar, { responseType: 'arraybuffer', timeout: 4000 });
+          if (stored.data && stored.data.byteLength > 100) {
+            res.setHeader('Content-Type', String(stored.headers['content-type'] || 'image/jpeg'));
+            res.setHeader('Cache-Control', 'public, max-age=86400');
+            return res.send(Buffer.from(stored.data));
+          }
+        } catch {
+          // CDN signature expired -> fall through to refresh via Graph API
+        }
+      }
+
+      // Negative cache: don't hammer Graph API for IDs that recently failed (protects app rate limit)
+      const failedAt = avatarFailCache.get(metaId);
+      if (failedAt && Date.now() - failedAt < 30 * 60 * 1000) {
+        return res.status(404).end();
+      }
+
       const connectedPages = await prisma.page.findMany({
         where: { isConnected: true },
       });
@@ -1122,33 +1142,13 @@ export class MetaController {
       const orderedPages = [
         ...(customer?.primaryPage && customer.primaryPage.isConnected ? [customer.primaryPage] : []),
         ...connectedPages.filter((p) => p.id !== customer?.primaryPageId),
-      ];
+      ].slice(0, 1);
 
       for (const page of orderedPages) {
         const pageToken = decryptToken(page.encryptedAccessToken);
         if (!pageToken) continue;
 
-        // 1. Try streaming directly from Graph /picture edge (follows redirect to CDN on server side)
-        try {
-          const directImg = await axios.get(`https://graph.facebook.com/v19.0/${metaId}/picture`, {
-            params: {
-              width: 200,
-              height: 200,
-              type: 'large',
-              access_token: pageToken,
-            },
-            responseType: 'arraybuffer',
-            timeout: 4500,
-          });
-          if (directImg.data && directImg.data.byteLength > 100) {
-            const contentType = String(directImg.headers['content-type'] || 'image/jpeg');
-            res.setHeader('Content-Type', contentType);
-            res.setHeader('Cache-Control', 'public, max-age=86400');
-            return res.send(Buffer.from(directImg.data));
-          }
-        } catch {}
-
-        // 2. Fallback: Resolve profile_pic URL via getCustomerProfile and stream its image bytes
+        // 1. Resolve profile_pic URL via getCustomerProfile (saves to DB so next time costs 0 Graph calls)
         try {
           const profile = await MetaGraphService.getCustomerProfile(metaId, pageToken);
           if (profile?.profile_pic) {
@@ -1185,9 +1185,12 @@ export class MetaController {
         } catch {}
       }
 
+      avatarFailCache.set(metaId, Date.now());
       return res.status(404).end();
     } catch {
       return res.status(404).end();
     }
   }
 }
+
+const avatarFailCache = new Map<string, number>();

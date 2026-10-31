@@ -454,7 +454,7 @@ export class CommentsController {
       const posts = await prisma.post.findMany({
         where: { pageId: page.id },
         orderBy: { publishedAt: 'desc' },
-        take: 30,
+        take: 8,
       });
 
       for (const post of posts) {

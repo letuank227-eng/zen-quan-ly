@@ -111,49 +111,39 @@ export class MetaGraphService {
     let lastName: string | undefined;
     let profilePic: string | undefined;
 
-    const [psidRes, picEdgeRes, basicRes] = await Promise.allSettled([
-      axios.get(`${GRAPH_BASE_URL}/${psid}`, {
+    // Step 1 (1 API call): Messenger PSID profile fields
+    try {
+      const r = await axios.get(`${GRAPH_BASE_URL}/${psid}`, {
         params: {
           fields: 'id,name,first_name,last_name,profile_pic',
           access_token: pageAccessToken,
         },
-        timeout: 3500,
-      }),
-      axios.get(`${GRAPH_BASE_URL}/${psid}/picture`, {
-        params: {
-          redirect: false,
-          type: 'large',
-          width: 200,
-          height: 200,
-          access_token: pageAccessToken,
-        },
-        timeout: 3500,
-      }),
-      axios.get(`${GRAPH_BASE_URL}/${psid}`, {
-        params: {
-          fields: 'id,name,picture.width(200).height(200){url}',
-          access_token: pageAccessToken,
-        },
-        timeout: 3500,
-      }),
-    ]);
-
-    if (psidRes.status === 'fulfilled' && psidRes.value.data) {
-      const d = psidRes.value.data;
-      name = d.name || [d.first_name, d.last_name].filter(Boolean).join(' ') || undefined;
-      firstName = d.first_name;
-      lastName = d.last_name;
-      if (d.profile_pic) profilePic = d.profile_pic;
+        timeout: 4000,
+      });
+      const d = r.data;
+      if (d) {
+        name = d.name || [d.first_name, d.last_name].filter(Boolean).join(' ') || undefined;
+        firstName = d.first_name;
+        lastName = d.last_name;
+        if (d.profile_pic) profilePic = d.profile_pic;
+      }
+    } catch (err: any) {
+      // Stop immediately if Meta rate limit reached to avoid wasting quota
+      const code = err.response?.data?.error?.code;
+      if (code === 4 || code === 17 || code === 32 || code === 613) return null;
     }
 
-    if (basicRes.status === 'fulfilled' && basicRes.value.data) {
-      const d = basicRes.value.data;
-      if (!name && d.name) name = d.name;
-      if (!profilePic && d.picture?.data?.url) profilePic = d.picture.data.url;
-    }
-
-    if (!profilePic && picEdgeRes.status === 'fulfilled' && picEdgeRes.value.data?.data?.url) {
-      profilePic = picEdgeRes.value.data.data.url;
+    // Step 2 (only if needed): /picture edge
+    if (!profilePic) {
+      try {
+        const picRes = await axios.get(`${GRAPH_BASE_URL}/${psid}/picture`, {
+          params: { redirect: false, type: 'large', access_token: pageAccessToken },
+          timeout: 3500,
+        });
+        if (picRes.data?.data?.url && !picRes.data?.data?.is_silhouette) {
+          profilePic = picRes.data.data.url;
+        }
+      } catch {}
     }
 
     if (!name && !profilePic) return null;

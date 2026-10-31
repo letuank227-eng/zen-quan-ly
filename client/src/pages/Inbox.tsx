@@ -88,7 +88,7 @@ export const Inbox: React.FC = () => {
         })
         .then(() => fetchInbox())
         .catch(() => {});
-    }, 12000);
+    }, 90000);
     return () => clearInterval(timer);
   }, [selectedPageId]);
 
